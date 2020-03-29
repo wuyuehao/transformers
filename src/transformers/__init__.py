@@ -159,6 +159,7 @@ if is_torch_available():
         BertForQuestionAnswering,
         load_tf_weights_in_bert,
         BERT_PRETRAINED_MODEL_ARCHIVE_MAP,
+        CustomizedSequenceClassification, 
     )
     from .modeling_openai import (
         OpenAIGPTPreTrainedModel,

@@ -1098,6 +1098,65 @@ class BertForNextSentencePrediction(BertPreTrainedModel):
 
         return outputs  # (next_sentence_loss), seq_relationship_score, (hidden_states), (attentions)
 
+class CustomizedSequenceClassification(BertPreTrainedModel):
+    def __init__(self, config, hidden_layers=[8]):
+        super().__init__(config)
+        self.num_labels = config.num_labels
+        self.hidden_layers = hidden_layers
+        self.bert = BertModel(config)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.classifier = nn.Linear(config.hidden_size, self.config.num_labels)
+        self.hidden = nn.Linear(config.hidden_size * len(self.hidden_layers), config.hidden_size)
+        self.init_weights()
+        
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        token_type_ids=None,
+        position_ids=None,
+        head_mask=None,
+        inputs_embeds=None,
+        labels=None,
+    ):
+
+        outputs = self.bert(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+            inputs_embeds=inputs_embeds,
+        )
+
+        hidden_states = outputs[2]
+        
+        selected_layers=[]
+        for l in self.hidden_layers:
+            h = hidden_states[l]
+            pooled = torch.max(h.permute(0,2,1), 2).values
+            selected_layers.append(pooled)
+        if(len(selected_layers)>1):
+            pooled_output = torch.cat(selected_layers, dim=-1)
+        else:
+            pooled_output = selected_layers[0]
+           
+        pooled_output = self.dropout(pooled_output)
+        logits = self.classifier(torch.tanh(self.hidden(pooled_output)))
+
+        outputs = (logits,) + outputs[2:]  # add hidden states and attention if they are here
+
+        if labels is not None:
+            if self.num_labels == 1:
+                #  We are doing regression
+                loss_fct = MSELoss()
+                loss = loss_fct(logits.view(-1), labels.view(-1))
+            else:
+                loss_fct = CrossEntropyLoss()
+                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+            outputs = (loss,) + outputs
+
+        return outputs  # (loss), logits, (hidden_states), (attentions)
 
 @add_start_docstrings(
     """Bert Model transformer with a sequence classification/regression head on top (a linear layer on top of
@@ -1195,6 +1254,7 @@ class BertForSequenceClassification(BertPreTrainedModel):
 
         return outputs  # (loss), logits, (hidden_states), (attentions)
 
+    
 
 @add_start_docstrings(
     """Bert Model with a multiple choice classification head on top (a linear layer on top of
@@ -1230,7 +1290,7 @@ class BertForMultipleChoice(BertPreTrainedModel):
 
     Returns:
         :obj:`tuple(torch.FloatTensor)` comprising various elements depending on the configuration (:class:`~transformers.BertConfig`) and inputs:
-        loss (:obj:`torch.FloatTensor`` of shape ``(1,)`, `optional`, returned when :obj:`labels` is provided):
+        loss (:obj:`torch.FloatTensor` of shape `(1,)`, `optional`, returned when :obj:`labels` is provided):
             Classification loss.
         classification_scores (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, num_choices)`):
             `num_choices` is the second dimension of the input tensors. (see `input_ids` above).
@@ -1382,8 +1442,10 @@ class BertForTokenClassification(BertPreTrainedModel):
             # Only keep active parts of the loss
             if attention_mask is not None:
                 active_loss = attention_mask.view(-1) == 1
-                active_logits = logits.view(-1, self.num_labels)[active_loss]
-                active_labels = labels.view(-1)[active_loss]
+                active_logits = logits.view(-1, self.num_labels)
+                active_labels = torch.where(
+                    active_loss, labels.view(-1), torch.tensor(loss_fct.ignore_index).type_as(labels)
+                )
                 loss = loss_fct(active_logits, active_labels)
             else:
                 loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
